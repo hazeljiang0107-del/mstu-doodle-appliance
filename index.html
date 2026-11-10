@@ -87,7 +87,13 @@
 
     <section class="log" aria-label="State log">
       <h2>State log</h2>
-      <p class="hint">Every time the machine changes state, it is written here with the reason.</p>
+      <p class="hint">Everything the machine does is written here with the reason, newest first.</p>
+      <div class="legend">
+        <span class="log-state">State change</span>
+        <span class="log-action">Your action</span>
+        <span class="log-blocked">Refused</span>
+        <span class="log-warning">Warning</span>
+      </div>
       <ol id="logList"></ol>
     </section>
   </main>

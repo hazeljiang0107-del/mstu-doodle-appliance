@@ -6,6 +6,7 @@ const HOPPER_MAX = 100;        // grams of beans
 const AUTO_OFF_SECONDS = 45;   // shortened from a real machine's ~30 minutes
 const TICK_MS = 100;           // how often the simulation updates
 const CUP_SIZES = { espresso: 40, medium: 180, large: 300 }; // ml
+const SIZE_NAMES = { espresso: "Espresso cup", medium: "Mug", large: "Travel mug" };
 
 const STATE_LABELS = {
   off: "OFF",
@@ -50,20 +51,22 @@ function beansNeeded() {
 
 const startTime = Date.now();
 
-function addLog(text, reason) {
+// kind is one of: "state", "action", "blocked", "warning"
+function addLog(kind, text, reason) {
   const seconds = Math.floor((Date.now() - startTime) / 1000);
   const stamp = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   const item = document.createElement("li");
+  item.className = `log-${kind}`;
   item.innerHTML = `<span class="stamp">${stamp}</span> <strong>${text}</strong> <span class="reason">${reason}</span>`;
   const list = el("logList");
   list.prepend(item);
-  while (list.children.length > 30) list.lastChild.remove();
+  while (list.children.length > 60) list.lastChild.remove();
 }
 
 // Every state change goes through here so it gets logged.
 function setState(nextState, reason) {
   if (nextState === machineState) return;
-  addLog(`${STATE_LABELS[machineState]} → ${STATE_LABELS[nextState]}`, reason);
+  addLog("state", `${STATE_LABELS[machineState]} → ${STATE_LABELS[nextState]}`, reason);
   machineState = nextState;
   idleSeconds = 0;
 }
@@ -81,13 +84,15 @@ function pressPower() {
       message = "Heating water...";
     }
   } else {
+    let reason = "Power pressed";
     if (machineState === "brewing" || machineState === "paused") {
       message = "Brew cancelled. Machine off.";
+      reason = `Power pressed, brew cancelled at ${Math.round(brewProgress)}% (${Math.round(cupContents)} ml poured)`;
     } else {
       message = "Press Power to start.";
     }
     brewProgress = 0;
-    setState("off", "Power pressed");
+    setState("off", reason);
   }
 }
 
@@ -113,9 +118,13 @@ function pressBrew() {
   } else {
     beansLevel -= beansNeeded();
     brewProgress = 0;
-    setState("brewing", `Brew pressed (${brewSize}, strength ${strength})`);
+    setState("brewing",
+      `Brew pressed: ${brewSize}, strength ${strength}, using ${waterNeeded()} ml water and ${beansNeeded()} g beans`);
     message = "Grinding and brewing...";
+    return;
   }
+
+  addLog("blocked", "Brew refused", message);
 }
 
 function toggleCup() {
@@ -131,15 +140,18 @@ function toggleCup() {
       setState("ready", "Cup taken");
       message = "Enjoy your coffee!";
     } else {
+      const leftover = Math.round(cupContents);
       cupContents = 0;
       message = "Cup removed.";
+      addLog("action", "Cup removed", leftover > 0 ? `Took a partial cup (${leftover} ml)` : "Empty cup");
     }
   } else {
     if (machineState === "paused") {
-      setState("brewing", "Cup put back");
+      setState("brewing", `Cup put back, resuming at ${Math.round(brewProgress)}%`);
       message = "Resuming brew...";
     } else {
       message = "Cup placed under the spout.";
+      addLog("action", "Cup placed", `${SIZE_NAMES[brewSize]} under the spout`);
     }
   }
 }
@@ -148,9 +160,12 @@ function refillWater() {
   idleSeconds = 0;
   if (machineState === "brewing" || machineState === "paused") {
     message = "Can't open the tank while brewing.";
+    addLog("blocked", "Water refill refused", message);
   } else {
+    const before = Math.round(waterLevel);
     waterLevel = TANK_MAX;
     message = "Water tank refilled.";
+    addLog("action", "Water refilled", `${before} ml → ${TANK_MAX} ml`);
   }
 }
 
@@ -158,9 +173,12 @@ function refillBeans() {
   idleSeconds = 0;
   if (machineState === "brewing" || machineState === "paused") {
     message = "Can't open the hopper while brewing.";
+    addLog("blocked", "Bean refill refused", message);
   } else {
+    const before = beansLevel;
     beansLevel = HOPPER_MAX;
     message = "Bean hopper refilled.";
+    addLog("action", "Beans refilled", `${before} g → ${HOPPER_MAX} g`);
   }
 }
 
@@ -192,7 +210,7 @@ function tick() {
     cupContents += poured;
 
     if (brewProgress >= 100) {
-      setState("done", "Brew finished");
+      setState("done", `Brew finished: ${waterNeeded()} ml poured in about ${brewSeconds}s`);
       message = "Coffee's ready! Take your cup.";
     }
   }
@@ -254,6 +272,7 @@ beansBtn.addEventListener("click", () => { refillBeans(); render(); });
 sizeSelect.addEventListener("change", () => {
   brewSize = sizeSelect.value;
   idleSeconds = 0;
+  addLog("action", "Cup size changed", `${SIZE_NAMES[brewSize]} (${CUP_SIZES[brewSize]} ml)`);
   render();
 });
 
@@ -263,5 +282,30 @@ strengthRange.addEventListener("input", () => {
   render();
 });
 
-setInterval(() => { tick(); render(); }, TICK_MS);
+// "input" fires continuously while dragging; "change" fires once on release, so log here.
+strengthRange.addEventListener("change", () => {
+  addLog("action", "Strength changed", `${strength} / 5, next brew uses ${beansNeeded()} g beans`);
+});
+
+// Log a warning only when a supply first runs low, not on every tick.
+let waterWarned = false;
+let beansWarned = false;
+
+function checkSupplies() {
+  if (machineState === "brewing" || machineState === "paused") return;
+
+  const waterLow = waterLevel < waterNeeded();
+  const beansLow = beansLevel < beansNeeded();
+
+  if (waterLow && !waterWarned) {
+    addLog("warning", "Water low", `Tank has ${Math.round(waterLevel)} ml, next brew needs ${waterNeeded()} ml`);
+  }
+  if (beansLow && !beansWarned) {
+    addLog("warning", "Beans low", `Hopper has ${beansLevel} g, next brew needs ${beansNeeded()} g`);
+  }
+  waterWarned = waterLow;
+  beansWarned = beansLow;
+}
+
+setInterval(() => { tick(); checkSupplies(); render(); }, TICK_MS);
 render();
